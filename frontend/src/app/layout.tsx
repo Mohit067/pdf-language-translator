@@ -34,7 +34,7 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className="min-h-screen bg-[var(--background)] text-neutral-900 flex flex-col selection:bg-neutral-900 selection:text-white">
+      <body className="min-h-screen bg-(--background) text-neutral-900 flex flex-col selection:bg-neutral-900 selection:text-white">
         {children}
       </body>
     </html>

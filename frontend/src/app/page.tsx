@@ -132,7 +132,7 @@ function ErrorBanner({ error, onClose }: { error: FriendlyError; onClose?: () =>
             >
               {showDetails ? "Hide details" : "Show details"}
             </button>
-            {showDetails && <p className="text-sm text-red-700 break-words font-mono">{error.details}</p>}
+            {showDetails && <p className="text-sm text-red-700 wrap-break-word font-mono">{error.details}</p>}
           </>
         )}
       </div>
@@ -251,7 +251,7 @@ function DirectionNotice({ sourceLang, targetLang, englishToIndicWorks, details 
           >
             {showDetails ? "Hide details" : "Details for the person who set it up"}
           </button>
-          {showDetails && <p className="text-sm text-amber-800 break-words font-mono">{details}</p>}
+          {showDetails && <p className="text-sm text-amber-800 wrap-break-word font-mono">{details}</p>}
         </>
       )}
     </div>
