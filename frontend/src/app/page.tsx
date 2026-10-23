@@ -222,6 +222,42 @@ function StepCard({ number, title, children }: { number: number; title: string; 
   );
 }
 
+interface DirectionInfo {
+  available: boolean | null; // null = couldn't check (e.g. offline)
+  state: string;
+  reason?: string;
+}
+
+function DirectionNotice({ sourceLang, targetLang, englishToIndicWorks, details }: {
+  sourceLang: string; targetLang: string; englishToIndicWorks: boolean; details?: string;
+}) {
+  const [showDetails, setShowDetails] = useState(false);
+  return (
+    <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-1.5">
+      <p className="text-base font-semibold text-amber-800">
+        {sourceLang} → {targetLang} isn&apos;t available on this computer yet
+      </p>
+      <p className="text-base text-amber-800">
+        {englishToIndicWorks
+          ? "Right now you can translate from English into any Indian language. To add this language pair, ask the person who set up this app."
+          : "Please ask the person who set up this app to turn on this language pair."}
+      </p>
+      {details && (
+        <>
+          <button
+            onClick={() => setShowDetails((s) => !s)}
+            className="text-sm text-amber-800 underline underline-offset-2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 rounded"
+            aria-expanded={showDetails}
+          >
+            {showDetails ? "Hide details" : "Details for the person who set it up"}
+          </button>
+          {showDetails && <p className="text-sm text-amber-800 break-words font-mono">{details}</p>}
+        </>
+      )}
+    </div>
+  );
+}
+
 function BackToHome({ onClick }: { onClick: () => void }) {
   return (
     <button
@@ -237,6 +273,7 @@ function BackToHome({ onClick }: { onClick: () => void }) {
 export default function Home() {
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
   const [modelProblem, setModelProblem] = useState<string | null>(null);
+  const [directions, setDirections] = useState<Record<string, DirectionInfo>>({});
   const [maxUploadMb, setMaxUploadMb] = useState<number>(50);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -261,6 +298,7 @@ export default function Home() {
       if (!res.ok) throw new Error();
       const data = await res.json();
       setModelProblem(data.model_error || null);
+      setDirections(data.directions || {});
       if (data.max_upload_mb) setMaxUploadMb(data.max_upload_mb);
       setBackendOnline(true);
     } catch {
@@ -274,6 +312,9 @@ export default function Home() {
     checkHealth();
     setJobs(loadJobs());
     setJobsLoaded(true);
+    // Availability of language directions can change (e.g. a model gets set up), so refresh it now and then
+    const timer = setInterval(checkHealth, 60_000);
+    return () => clearInterval(timer);
   }, [checkHealth]);
 
   useEffect(() => {
@@ -339,7 +380,11 @@ export default function Home() {
 
   const sameLanguage = sourceLang === targetLang;
   const uploading = uploadPercent !== null;
-  const canTranslate = !!selectedFile && !sameLanguage && !uploading;
+  // Each direction uses its own model; one may be set up while another is not
+  const direction = sourceLang === "English" ? "en-indic" : targetLang === "English" ? "indic-en" : "indic-indic";
+  const directionInfo = directions[direction];
+  const directionBlocked = !sameLanguage && directionInfo?.available === false;
+  const canTranslate = !!selectedFile && !sameLanguage && !uploading && !directionBlocked;
 
   const handleStartTranslation = async () => {
     if (!selectedFile || sameLanguage) return;
@@ -563,6 +608,14 @@ export default function Home() {
                     }}
                     disabled={uploading}
                   />
+                  {directionBlocked && (
+                    <DirectionNotice
+                      sourceLang={sourceLang}
+                      targetLang={targetLang}
+                      englishToIndicWorks={directions["en-indic"]?.available !== false}
+                      details={directionInfo?.reason}
+                    />
+                  )}
                 </StepCard>
 
                 <div className="space-y-2">
@@ -593,6 +646,8 @@ export default function Home() {
                         ? jobs.length
                           ? "Choose another document in step 1 to translate it too."
                           : "First, choose a document in step 1."
+                        : directionBlocked
+                        ? "This language pair isn't available yet. See the note in step 2."
                         : "Please choose two different languages in step 2."}
                     </p>
                   )}

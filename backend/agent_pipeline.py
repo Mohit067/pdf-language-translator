@@ -185,6 +185,7 @@ class IndicTrans2Agent:
         self.device = "cpu"
         self._models: "OrderedDict[str, Tuple[object, object]]" = OrderedDict()
         self._load_errors: Dict[str, str] = {}
+        self._availability: Dict[str, Dict[str, object]] = {}
         self._torch_error: Optional[str] = None
         self._processor = None
         self.processor_impl: Optional[str] = None
@@ -199,6 +200,51 @@ class IndicTrans2Agent:
     @property
     def neural_available(self) -> bool:
         return bool(self._models)
+
+    def check_availability(self) -> Dict[str, Dict[str, object]]:
+        """Works out, without loading any model, which translation directions can run:
+        loaded, or weights in a local folder / the local cache, or downloadable now.
+        Gated repos without access are reported as unavailable with a plain reason."""
+        from huggingface_hub import auth_check, try_to_load_from_cache
+
+        result: Dict[str, Dict[str, object]] = {}
+        for direction, name in MODEL_NAMES.items():
+            revision = MODEL_REVISIONS.get(direction)
+            if direction in self._models:
+                result[direction] = {"available": True, "state": "loaded"}
+                continue
+            if Path(name).is_dir():
+                result[direction] = {"available": True, "state": "local_folder"}
+                continue
+            cached = try_to_load_from_cache(name, "model.safetensors", revision=revision)
+            if isinstance(cached, str):
+                result[direction] = {"available": True, "state": "downloaded"}
+                continue
+            try:
+                auth_check(name)
+                result[direction] = {"available": True, "state": "downloads_on_first_use"}
+            except Exception as e:
+                gated = "gated" in str(e).lower() or "403" in str(e) or "401" in str(e)
+                result[direction] = {
+                    "available": False if gated else None,  # None = unknown (e.g. offline)
+                    "state": "no_access" if gated else "unknown",
+                    "reason": self._explain_load_error(name, e),
+                }
+        # Indic -> Indic can pivot through English when its own model is missing
+        if not result["indic-indic"]["available"] and result["indic-en"]["available"] and result["en-indic"]["available"]:
+            result["indic-indic"] = {"available": True, "state": "via_english"}
+        self._availability = result
+        return result
+
+    @property
+    def availability(self) -> Dict[str, Dict[str, object]]:
+        known = dict(self._availability)
+        for direction in MODEL_NAMES:  # live facts override the startup check
+            if direction in self._models:
+                known[direction] = {"available": True, "state": "loaded"}
+            elif direction in self._load_errors:
+                known[direction] = {"available": False, "state": "load_failed", "reason": self._load_errors[direction]}
+        return known
 
     def status(self) -> Dict[str, object]:
         return {

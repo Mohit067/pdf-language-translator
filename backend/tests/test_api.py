@@ -87,7 +87,11 @@ def test_model_load_failure_is_reported_not_silently_bypassed(client, monkeypatc
     assert status["error_type"] == "model"
     assert status["error"]
     health = client.get("/api/health").json()
-    assert health["model_error"]
+    # A missing model is reported for that direction only; if PyTorch itself can't start, it's engine-wide
+    if health["model_error"] is None:
+        assert health["directions"]["indic-en"]["available"] is False
+        assert health["directions"]["indic-en"]["reason"]
+    agent._load_errors.pop("indic-en", None)
 
 
 def test_original_is_downloadable_with_unicode_filename_even_when_job_failed(client):

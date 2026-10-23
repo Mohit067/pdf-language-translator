@@ -28,6 +28,7 @@ def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "OUTPUTS_DIR", outputs)
     monkeypatch.setattr(processors, "OUTPUTS_DIR", outputs)
     monkeypatch.setattr(main, "PRELOAD_MODELS", [])  # tests load the model only where they need it
+    monkeypatch.setattr(main, "_preload_models", lambda: None)  # no startup network checks in tests
     main.JOB_CACHE.clear()
     yield uploads, outputs
 

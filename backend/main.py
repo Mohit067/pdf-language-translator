@@ -80,6 +80,10 @@ def cleanup_expired_files(now: Optional[float] = None) -> int:
 
 
 def _preload_models() -> None:
+    try:
+        agent.check_availability()
+    except Exception as e:
+        logger.warning(f"Could not check which translation directions are available: {e}")
     for direction in PRELOAD_MODELS:
         try:
             agent.load_model(direction)
@@ -123,8 +127,8 @@ async def lifespan(app: FastAPI):
     removed = cleanup_expired_files()
     if removed:
         logger.info(f"Removed {removed} expired file(s) older than {JOB_TTL_HOURS}h")
-    if PRELOAD_MODELS:
-        threading.Thread(target=_preload_models, daemon=True, name="preload").start()
+    # Availability check (network metadata only) and optional preloading run in the background
+    threading.Thread(target=_preload_models, daemon=True, name="preload").start()
     yield
     if _executor is not None:
         _executor.shutdown(wait=False, cancel_futures=True)
@@ -364,7 +368,9 @@ def health_check():
         "neural_available": agent.neural_available,
         "mode": "local_indictrans2",
         "model_status": model_status,
-        "model_error": model_status["torch_error"] or next(iter(model_status["load_errors"].values()), None),
+        # Only an engine-wide failure is a "not ready" error; per-direction problems are in `directions`
+        "model_error": model_status["torch_error"],
+        "directions": agent.availability,
         "active_jobs": active,
         "max_parallel_jobs": MAX_PARALLEL_JOBS,
         "max_upload_mb": MAX_UPLOAD_MB,
