@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+/* `dark:` utilities follow the .dark class on <html> (set by the theme toggle / system preference) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: #fafafa;
+  --foreground: #090a0b;
+  --scrollbar: #d4d4d8;
+  --scrollbar-hover: #a1a1aa;
+}
+
+/*
+ * Dark theme: Tailwind v4 utilities read colors from CSS variables, so remapping the palette
+ * here re-themes every component without per-class dark: variants. Neutral is inverted
+ * (white = card surface), and the tinted families become deep backgrounds with light text.
+ */
+html.dark {
+  color-scheme: dark;
+  --background: #0b0b0d;
+  --foreground: #f4f4f5;
+  --scrollbar: #3f3f46;
+  --scrollbar-hover: #52525b;
+
+  --color-white: #151518;
+  --color-neutral-50: #1b1b1f;
+  --color-neutral-100: #232328;
+  --color-neutral-200: #2e2e34;
+  --color-neutral-300: #3f3f46;
+  --color-neutral-400: #71717a;
+  --color-neutral-500: #a1a1aa;
+  --color-neutral-600: #b8b8c0;
+  --color-neutral-700: #d4d4d8;
+  --color-neutral-800: #e4e4e7;
+  --color-neutral-900: #f4f4f5;
+  --color-neutral-950: #fafafa;
+
+  --color-emerald-50: #0a2a1f;
+  --color-emerald-100: #0f3a2b;
+  --color-emerald-200: #1d5a43;
+  --color-emerald-400: #059669;
+  --color-emerald-500: #10b981;
+  --color-emerald-600: #34d399;
+  --color-emerald-700: #6ee7b7;
+  --color-emerald-800: #a7f3d0;
+  --color-emerald-900: #d1fae5;
+  --color-emerald-950: #ecfdf5;
+
+  --color-amber-50: #2a1f07;
+  --color-amber-200: #5c4512;
+  --color-amber-400: #fbbf24;
+  --color-amber-600: #fbbf24;
+  --color-amber-700: #fcd34d;
+  --color-amber-800: #fde68a;
+  --color-amber-950: #fffbeb;
+
+  --color-red-50: #2c1013;
+  --color-red-100: #3b1519;
+  --color-red-200: #6b2128;
+  --color-red-600: #f87171;
+  --color-red-700: #fca5a5;
+  --color-red-800: #fecaca;
+  --color-red-900: #fee2e2;
+
+  --color-blue-50: #0d1b33;
+  --color-blue-200: #1e3a6e;
+  --color-blue-600: #60a5fa;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom crisp scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-hover);
+}

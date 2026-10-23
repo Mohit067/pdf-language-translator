@@ -1,0 +1,42 @@
+# Version Control
+.git
+.gitignore
+**/.git
+
+# Python
+backend/venv/
+**/venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Node.js & Next.js
+frontend/node_modules/
+**/node_modules/
+frontend/.next/
+**/.next/
+.turbo/
+
+# Local settings (may hold HF_TOKEN) and tests stay out of images
+backend/.env
+backend/tests/
+.env
+
+# Storage & Uploads
+backend/storage/uploads/*
+backend/storage/outputs/*
+!backend/storage/uploads/.gitkeep
+!backend/storage/outputs/.gitkeep
+
+# Sample test documents & logs
+sample_invoice.pdf
+sample_sales.xlsx
+test_downloaded.xlsx
+*.log
+.DS_Store
+
+# IDE & Config
+.vscode
+.idea
+.gemini

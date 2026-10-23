@@ -1,0 +1,17 @@
+venv
+# Local settings (may hold HF_TOKEN) must not be baked into images; compose passes config as env vars
+.env
+pytest.ini
+tests
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+storage/uploads/*
+storage/outputs/*
+!storage/uploads/.gitkeep
+!storage/outputs/.gitkeep
+.git
+.gitignore
+*.log
+.DS_Store

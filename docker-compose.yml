@@ -1,0 +1,70 @@
+# ===============================================================
+# TransDoc Docker Compose - AI4Bharat IndicTrans2 Translation Studio
+# Multi-service setup with parallel BuildKit caching & model persistence
+# ===============================================================
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: transdoc-backend
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    # All app settings (MAX_UPLOAD_MB, models, HF_TOKEN, tuning...) come from backend/.env,
+    # the same file used for local runs. Restart with `docker compose up -d` after editing it.
+    env_file:
+      - path: ./backend/.env
+        required: false
+    # Container-only settings (these override backend/.env)
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+      - HF_HOME=/root/.cache/huggingface
+    volumes:
+      # Persist downloaded AI4Bharat neural models so they never re-download across restarts/builds
+      - hf-cache:/root/.cache/huggingface
+      # Persist user uploads and translated output documents
+      - ./backend/storage:/app/backend/storage
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+      # Probe every 2s while starting, so the frontend starts as soon as the API is up
+      start_interval: 2s
+    restart: unless-stopped
+    networks:
+      - transdoc-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: transdoc-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      - NODE_ENV=production
+      - NEXT_TELEMETRY_DISABLED=1
+      # Internal Docker DNS address for server-side proxying
+      - BACKEND_INTERNAL_URL=http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - transdoc-net
+
+volumes:
+  # Named volume for HuggingFace model cache (~200MB - 1GB saved permanently)
+  hf-cache:
+    name: transdoc-hf-cache
+
+networks:
+  transdoc-net:
+    name: transdoc-net
+    driver: bridge

@@ -1,0 +1,24 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-dotenv>=1.0.1
+python-multipart>=0.0.9
+openpyxl>=3.1.5
+xlrd>=2.0.1
+python-docx>=1.1.0
+# 1.26.x: layout-preserving PDF rewrite with HarfBuzz shaping for Indic scripts (2.x pulls in onnxruntime)
+PyMuPDF>=1.26,<1.27
+torch>=2.2.0
+# Windows: Microsoft VC++ runtime DLLs for torch, loaded app-locally (no admin install needed)
+msvc-runtime>=14.44; platform_system == "Windows"
+# <4.47: IndicTrans2's remote model code expects legacy tuple KV-caches. Newer generate() passes Cache
+# objects instead (4.55: "Cache only has 0 layers", 4.56+: "'NoneType' object has no attribute 'shape'"),
+# and 5.0 removed transformers.onnx, which the model code imports.
+transformers>=4.40.0,<4.47
+sentencepiece>=0.2.0
+packaging>=23.0
+# IndicTrans2 pre/post-processing. The compiled IndicTransToolkit is used where a wheel exists
+# (Linux, CPython 3.10-3.13); otherwise backend/indic_processor.py (pure-Python port) is used.
+regex>=2023.0
+sacremoses>=0.1.1
+indic-nlp-library-itt>=0.1.1
+IndicTransToolkit>=1.1.1; platform_system == "Linux" and python_version < "3.14"
