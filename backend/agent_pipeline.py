@@ -206,6 +206,7 @@ class IndicTrans2Agent:
         loaded, or weights in a local folder / the local cache, or downloadable now.
         Gated repos without access are reported as unavailable with a plain reason."""
         from huggingface_hub import auth_check, try_to_load_from_cache
+        from backend import verified_models
 
         result: Dict[str, Dict[str, object]] = {}
         for direction, name in MODEL_NAMES.items():
@@ -213,7 +214,7 @@ class IndicTrans2Agent:
             if direction in self._models:
                 result[direction] = {"available": True, "state": "loaded"}
                 continue
-            if Path(name).is_dir():
+            if Path(name).is_dir() or verified_models.has_verified_copy(name):
                 result[direction] = {"available": True, "state": "local_folder"}
                 continue
             cached = try_to_load_from_cache(name, "model.safetensors", revision=revision)
@@ -225,6 +226,9 @@ class IndicTrans2Agent:
                 result[direction] = {"available": True, "state": "downloads_on_first_use"}
             except Exception as e:
                 gated = "gated" in str(e).lower() or "403" in str(e) or "401" in str(e)
+                if gated and verified_models.can_assemble(name):
+                    result[direction] = {"available": True, "state": "verified_copy_on_first_use"}
+                    continue
                 result[direction] = {
                     "available": False if gated else None,  # None = unknown (e.g. offline)
                     "state": "no_access" if gated else "unknown",
@@ -326,17 +330,35 @@ class IndicTrans2Agent:
                 if self.device == "cuda":
                     torch.cuda.empty_cache()
 
+            from backend import verified_models
+
             revision = MODEL_REVISIONS.get(direction)
-            logger.info(f"Loading IndicTrans2 {direction} model '{name}'"
-                        f"{f' @ {revision[:10]}' if revision else ''} on {self.device}...")
-            try:
-                tokenizer = AutoTokenizer.from_pretrained(name, revision=revision, trust_remote_code=True)
-                model = AutoModelForSeq2SeqLM.from_pretrained(
-                    name,
-                    revision=revision,
+            source = name
+            if verified_models.has_verified_copy(name):
+                source, revision = str(verified_models.local_copy_dir(name)), None
+
+            def load(src: str, rev: Optional[str]):
+                logger.info(f"Loading IndicTrans2 {direction} model '{src}'"
+                            f"{f' @ {rev[:10]}' if rev else ''} on {self.device}...")
+                tok = AutoTokenizer.from_pretrained(src, revision=rev, trust_remote_code=True)
+                mdl = AutoModelForSeq2SeqLM.from_pretrained(
+                    src,
+                    revision=rev,
                     trust_remote_code=True,
                     **{dtype_kw: torch.float16 if self.device == "cuda" else torch.float32},
                 ).to(self.device)
+                return tok, mdl
+
+            try:
+                try:
+                    tokenizer, model = load(source, revision)
+                except Exception as e:
+                    gated = "gated" in str(e).lower() or "403" in str(e) or "401" in str(e)
+                    if not (gated and source == name and verified_models.can_assemble(name)):
+                        raise
+                    # No access to the gated official repo: build a byte-identical copy from public sources
+                    logger.info(f"'{name}' is gated; assembling a verified copy from public sources (one-time ~1 GB)")
+                    tokenizer, model = load(str(verified_models.assemble_verified_copy(name)), None)
             except Exception as e:
                 message = self._explain_load_error(name, e)
                 self._load_errors[direction] = message

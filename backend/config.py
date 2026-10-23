@@ -12,6 +12,9 @@ STORAGE_DIR = BACKEND_DIR / "storage"
 UPLOADS_DIR = STORAGE_DIR / "uploads"
 OUTPUTS_DIR = STORAGE_DIR / "outputs"
 
+# Verified local model copies (inside storage, so Docker keeps them in the mounted volume)
+MODELS_DIR = Path(os.getenv("MODELS_DIR") or STORAGE_DIR / "models")
+
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 

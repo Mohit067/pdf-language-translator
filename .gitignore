@@ -4,6 +4,8 @@ backend/storage/uploads/*
 backend/storage/outputs/*
 !backend/storage/uploads/.gitkeep
 !backend/storage/outputs/.gitkeep
+# Verified local model copies (~1 GB each), rebuilt automatically when missing
+backend/storage/models/
 
 # Frontend dependencies and build output
 node_modules/

@@ -7,6 +7,7 @@ __pycache__
 *.pyc
 *.pyo
 *.pyd
+storage/models
 storage/uploads/*
 storage/outputs/*
 !storage/uploads/.gitkeep

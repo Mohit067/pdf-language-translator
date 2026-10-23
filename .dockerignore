@@ -24,6 +24,7 @@ backend/tests/
 .env
 
 # Storage & Uploads
+backend/storage/models
 backend/storage/uploads/*
 backend/storage/outputs/*
 !backend/storage/uploads/.gitkeep
