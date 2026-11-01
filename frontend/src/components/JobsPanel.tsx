@@ -64,7 +64,7 @@ export function JobsPanel({ jobs, backendUrl, onOpen, onRemove, onStop }: JobsPa
                 <div className="min-w-0 flex-1">
                   <p className="text-base font-medium text-neutral-900 truncate" title={job.filename}>{job.filename}</p>
                   <p className="text-sm text-neutral-600">
-                    {job.sourceLang ? `${job.sourceLang} → ` : "→ "}{job.targetLang}
+                    {job.sourceLang ? `${job.sourceLang} → ` : "→ "}{job.targetLang}{job.tone && ` • ${job.tone}`}
                   </p>
                 </div>
                 <button

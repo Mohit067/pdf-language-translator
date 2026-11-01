@@ -21,6 +21,7 @@ export interface TranslationResult {
   chunk_count: number;
   source_lang: string;
   target_lang: string;
+  tone?: string;
   download_url: string;
   download_original_url?: string;
   original_url?: string;
@@ -111,7 +112,7 @@ export function ComparisonWorkspace({ result, onReset, backendUrl }: ComparisonW
               Your translation is ready
             </h2>
             <p className="text-base text-neutral-600 break-all">
-              {result.filename} · {result.source_lang} → {result.target_lang}
+              {result.filename} · {result.source_lang} → {result.target_lang}{result.tone && ` · Tone: ${result.tone}`}
             </p>
           </div>
         </div>

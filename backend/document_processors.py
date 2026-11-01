@@ -53,7 +53,7 @@ class DocumentProcessor:
     ) -> Dict[str, Any]:
         ext = file_path.suffix.lower()
         job_id = job_id or str(uuid.uuid4())
-        ctx = _Context(file_path, job_id, source_lang, target_lang, progress or _noop_progress)
+        ctx = _Context(file_path, job_id, source_lang, target_lang, progress or _noop_progress, tone=tone)
         ctx.progress(1, 2, "Parsing document")
 
         if ext == ".pdf":
@@ -113,16 +113,33 @@ class DocumentProcessor:
 
             for pno, items in by_page.items():
                 page = doc[pno]
+                # 1. Cleanly redact the original text in the text layer
                 for unit, _ in items:
+                    bg = _get_unit_bg_color(unit)
+                    r, _ = _get_render_rect(page, unit)
+                    pad = pymupdf.Rect(r.x0 - 1.5, r.y0 - 1.5, r.x1 + 1.5, r.y1 + 1.5)
+                    page.add_redact_annot(pad, fill=bg)
                     for rect in unit.line_rects:
-                        page.add_redact_annot(rect, fill=False)
+                        page.add_redact_annot(rect, fill=bg)
+
                 page.apply_redactions(
                     images=pymupdf.PDF_REDACT_IMAGE_NONE,
                     graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
                     text=pymupdf.PDF_REDACT_TEXT_REMOVE,
                 )
+
+                # 2. Draw solid opaque background over original text areas so underlying scanned
+                # images, watermarks, or rasterized fonts are completely covered with no ghosting/overlap.
+                for unit, _ in items:
+                    bg = _get_unit_bg_color(unit)
+                    r, _ = _get_render_rect(page, unit)
+                    pad = pymupdf.Rect(r.x0 - 1.5, r.y0 - 1.5, r.x1 + 1.5, r.y1 + 1.5)
+                    page.draw_rect(pad, color=None, fill=bg)
+
+                # 3. Render translated text cleanly onto the blanked areas
                 for unit, translated in items:
-                    _render_pdf_unit(page, unit, translated, rtl)
+                    r, centered = _get_render_rect(page, unit)
+                    _render_pdf_unit(page, unit, translated, rtl, r, centered)
 
             try:
                 doc.subset_fonts()
@@ -327,11 +344,12 @@ class DocumentProcessor:
 
 # ====================================================================== helpers
 class _Context:
-    def __init__(self, file_path: Path, job_id: str, source_lang: str, target_lang: str, progress: ProgressFn):
+    def __init__(self, file_path: Path, job_id: str, source_lang: str, target_lang: str, progress: ProgressFn, tone: str = "Professional"):
         self.file_path = file_path
         self.job_id = job_id
         self.source_lang = source_lang
         self.target_lang = target_lang
+        self.tone = tone
         self.src_code = get_lang_code(source_lang)
         self.tgt_code = get_lang_code(target_lang)
         if self.src_code == self.tgt_code:
@@ -341,12 +359,15 @@ class _Context:
 
     def translate(self, texts: List[str]) -> List[str]:
         direction = model_direction(self.src_code, self.tgt_code)
-        self.progress(2, 6, "Loading local IndicTrans2 model (first run downloads the weights)")
-        try:
-            agent.load_model(direction)
-        except ModelLoadError:
-            if direction != "indic-indic":  # indic-indic can pivot through English
-                raise
+        if hasattr(agent, "has_llm_engine") and agent.has_llm_engine():
+            self.progress(2, 6, "Connecting to translation engine")
+        else:
+            self.progress(2, 6, "Loading local IndicTrans2 model (first run downloads the weights)")
+            try:
+                agent.load_model(direction)
+            except ModelLoadError:
+                if direction != "indic-indic":  # indic-indic can pivot through English
+                    raise
 
         def on_progress(done: int, total: int) -> None:
             pct = 10 + 80 * (done / total if total else 1)
@@ -364,7 +385,7 @@ class _Context:
                 checkpoint.flush()
 
             return agent.translate_texts(texts, self.source_lang, self.target_lang, on_progress,
-                                         known=known, on_batch=on_batch)
+                                         known=known, on_batch=on_batch, tone=self.tone)
 
     @property
     def checkpoint_path(self) -> Path:
@@ -410,6 +431,7 @@ class _Context:
             "chunk_count": len(chunks),
             "source_lang": self.source_lang,
             "target_lang": self.target_lang,
+            "tone": self.tone,
             "chunks": chunks,
             "full_original": "\n\n".join(originals),
             "full_translated": "\n\n".join(translations),
@@ -438,16 +460,31 @@ class _PdfUnit:
 
     @property
     def text(self) -> str:
+        if not self.lines:
+            return ""
         if len(self.lines) == 1:
             return self.lines[0]["text"].strip()
         right = max(l["rect"].x1 for l in self.lines)
         width = self.rect.width or 1
         parts = []
         for i, l in enumerate(self.lines):
-            parts.append(l["text"].strip())
+            line_str = l["text"].strip()
+            if not line_str:
+                continue
             if i < len(self.lines) - 1:
-                # A line ending well before the paragraph's right edge is a deliberate line break
-                parts.append("\n" if right - l["rect"].x1 > 0.2 * width else " ")
+                # Re-join hyphenated words broken across line wraps (e.g. "Au-" + "gust" -> "August")
+                if re.search(r"(\b[a-zA-Z]{2,})-$", line_str):
+                    parts.append(line_str[:-1])
+                    continue
+                # A line ending well before the right edge is a deliberate break only if it ends with sentence punctuation
+                is_short = (right - l["rect"].x1) > 0.25 * width
+                has_punct = bool(re.search(r"""[.!?।॥۔؟:]["'”’)\]]*$""", line_str))
+                if is_short and has_punct:
+                    parts.append(line_str + "\n")
+                else:
+                    parts.append(line_str + " ")
+            else:
+                parts.append(line_str)
         return "".join(parts).strip()
 
     def style(self) -> Dict[str, Any]:
@@ -469,6 +506,110 @@ def _span_style(span: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _get_unit_bg_color(unit: _PdfUnit) -> Tuple[float, float, float]:
+    """Determines an opaque background fill for the text box.
+    Light documents get pure white (1, 1, 1); inverted/dark documents get black (0, 0, 0)."""
+    style = unit.style()
+    color_int = style.get("color", 0)
+    r = ((color_int >> 16) & 0xFF) / 255.0
+    g = ((color_int >> 8) & 0xFF) / 255.0
+    b = (color_int & 0xFF) / 255.0
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    return (0.0, 0.0, 0.0) if lum > 0.75 else (1.0, 1.0, 1.0)
+
+
+def _get_render_rect(page: pymupdf.Page, unit: _PdfUnit) -> Tuple[pymupdf.Rect, bool]:
+    rect = pymupdf.Rect(unit.rect)
+    page_w = page.rect.width
+    center = (rect.x0 + rect.x1) / 2
+    centered = (len(unit.lines) == 1 and rect.width < 0.75 * page_w and abs(center - page_w / 2) < 0.04 * page_w)
+    if centered:
+        # Give centered headings controlled room to grow symmetrically without colliding with page edges/numbers
+        max_expand = max(rect.width * 0.25, 20.0)
+        max_half = min(center - 54.0, page_w - 54.0 - center)
+        half = max(rect.width / 2.0, min(rect.width / 2.0 + max_expand, max_half))
+        rect.x0, rect.x1 = center - half, center + half
+    return rect, centered
+
+
+def _group_block_lines_by_row(raw_lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merges line fragments on the same baseline into single horizontal lines.
+    OCR layers and PDF generators often break a single text line into multiple line elements
+    at punctuation or tab stops, which would otherwise create overlapping units with identical y0."""
+    if not raw_lines:
+        return []
+    valid_lines = []
+    for l in raw_lines:
+        dx, dy = l.get("dir", (1, 0))
+        if abs(dy) <= 0.01 and dx >= 0:
+            valid_lines.append(l)
+    if not valid_lines:
+        return []
+
+    sorted_lines = sorted(valid_lines, key=lambda l: (round(l["bbox"][1] / 3.0) * 3.0, l["bbox"][0]))
+    rows: List[List[Dict[str, Any]]] = []
+    for l in sorted_lines:
+        if not rows:
+            rows.append([l])
+            continue
+        prev = rows[-1][0]
+        if abs(l["bbox"][1] - prev["bbox"][1]) < 3.5:
+            rows[-1].append(l)
+        else:
+            rows.append([l])
+
+    merged_lines = []
+    for row in rows:
+        row.sort(key=lambda l: l["bbox"][0])
+        all_spans = []
+        for l in row:
+            all_spans.extend(l.get("spans", []))
+        bbox = pymupdf.Rect(row[0]["bbox"])
+        for l in row[1:]:
+            bbox |= pymupdf.Rect(l["bbox"])
+        merged_lines.append({
+            "bbox": tuple(bbox),
+            "dir": row[0].get("dir", (1, 0)),
+            "spans": all_spans,
+        })
+    return merged_lines
+
+
+def _merge_consecutive_units(units: List[_PdfUnit], page_width: float) -> List[_PdfUnit]:
+    """Consolidates consecutive text units on the same page into cohesive paragraphs.
+    PDF generators often partition continuous paragraphs into multiple blocks or fragments
+    due to drop-caps, quotes, or font variations. Merging them preserves full narrative sentences."""
+    if not units:
+        return []
+    merged: List[_PdfUnit] = [units[0]]
+    for next_u in units[1:]:
+        curr_u = merged[-1]
+        c_style = curr_u.style()
+        n_style = next_u.style()
+        same_style = (
+            abs(c_style["size"] - n_style["size"]) < 2.5
+            and c_style["bold"] == n_style["bold"]
+            and c_style["color"] == n_style["color"]
+        )
+        line_h = max(c_style["size"], 10.0)
+        vert_gap = next_u.rect.y0 - curr_u.rect.y1
+        last_text = curr_u.lines[-1]["text"].strip()
+        ends_sentence = bool(re.search(r"""[.!?।॥۔؟:]["'”’)\]]*$""", last_text))
+
+        is_continuation = not ends_sentence and (vert_gap < 2.5 * line_h) and (vert_gap >= -4.0)
+        tight_paragraph = ends_sentence and (vert_gap < 1.4 * line_h) and (vert_gap >= -2.0)
+
+        curr_is_title = (len(curr_u.lines) == 1 and curr_u.rect.width < 0.65 * page_width and (c_style["bold"] or curr_u.text.isupper()))
+        next_is_title = (len(next_u.lines) == 1 and next_u.rect.width < 0.65 * page_width and (n_style["bold"] or next_u.text.isupper()))
+        h_align = (abs(curr_u.rect.x0 - next_u.rect.x0) < 45 or (next_u.rect.x0 < curr_u.rect.x1 and next_u.rect.x1 > curr_u.rect.x0))
+
+        if same_style and not curr_is_title and not next_is_title and h_align and (is_continuation or tight_paragraph):
+            curr_u.lines.extend(next_u.lines)
+        else:
+            merged.append(next_u)
+    return merged
+
+
 def _extract_pdf_units(page: pymupdf.Page) -> List[_PdfUnit]:
     data = page.get_text("dict", flags=pymupdf.TEXTFLAGS_TEXT | pymupdf.TEXT_DEHYPHENATE)
     units: List[_PdfUnit] = []
@@ -476,11 +617,8 @@ def _extract_pdf_units(page: pymupdf.Page) -> List[_PdfUnit]:
         if block.get("type") != 0:
             continue
         current: Optional[_PdfUnit] = None
-        for line in block.get("lines", []):
-            dx, dy = line.get("dir", (1, 0))
-            if abs(dy) > 0.01 or dx < 0:   # rotated/vertical text is left untouched
-                current = None
-                continue
+        grouped_lines = _group_block_lines_by_row(block.get("lines", []))
+        for line in grouped_lines:
             # Split a line into fragments where spans are far apart (table columns, tab stops)
             fragments: List[List[Dict[str, Any]]] = []
             for span in line.get("spans", []):
@@ -489,7 +627,7 @@ def _extract_pdf_units(page: pymupdf.Page) -> List[_PdfUnit]:
                 if fragments:
                     prev = fragments[-1][-1]
                     gap = span["bbox"][0] - prev["bbox"][2]
-                    if gap > max(2.5 * span.get("size", 10), 12):
+                    if gap > max(3.5 * span.get("size", 10), 36):
                         fragments.append([span])
                         continue
                     fragments[-1].append(span)
@@ -518,35 +656,40 @@ def _extract_pdf_units(page: pymupdf.Page) -> List[_PdfUnit]:
             entry = entries[0]
             if current is not None:
                 last = current.lines[-1]
-                same_style = (abs(last["size"] - entry["size"]) < 1.0 and last["bold"] == entry["bold"])
-                close = entry["rect"].y0 - last["rect"].y1 < 0.8 * entry["size"]
-                overlaps = entry["rect"].x0 < current.rect.x1 and entry["rect"].x1 > current.rect.x0
+                same_style = (abs(last["size"] - entry["size"]) < 2.5 and last["bold"] == entry["bold"])
+                gap = entry["rect"].y0 - last["rect"].y1
+                close = (-2.0 <= gap < 1.6 * max(entry["size"], last["size"], 10.0))
+                overlaps = (entry["rect"].x0 < current.rect.x1 + 36 and entry["rect"].x1 > current.rect.x0 - 54)
                 if same_style and close and overlaps:
                     current.lines.append(entry)
                     continue
             current = _PdfUnit(page.number)
             current.lines.append(entry)
             units.append(current)
-    return units
+    return _merge_consecutive_units(units, page.rect.width)
 
 
-def _render_pdf_unit(page: pymupdf.Page, unit: _PdfUnit, translated: str, rtl: bool) -> None:
+def _render_pdf_unit(
+    page: pymupdf.Page,
+    unit: _PdfUnit,
+    translated: str,
+    rtl: bool,
+    rect: Optional[pymupdf.Rect] = None,
+    centered: Optional[bool] = None,
+) -> None:
     style = unit.style()
-    rect = pymupdf.Rect(unit.rect)
-    page_w = page.rect.width
-    center = (rect.x0 + rect.x1) / 2
-    centered = (len(unit.lines) == 1 and rect.width < 0.75 * page_w and abs(center - page_w / 2) < 0.04 * page_w)
-    if centered:
-        # Give centered headings room to grow symmetrically instead of shrinking the font
-        half = max(rect.width / 2, min(center - 36, page_w - 36 - center))
-        rect.x0, rect.x1 = center - half, center + half
+    if rect is None or centered is None:
+        rect, centered = _get_render_rect(page, unit)
+
     align = "center" if centered else ("right" if rtl else "left")
+    font_family = "serif" if style["serif"] else "sans-serif"
+    direction = " direction: rtl;" if rtl else ""
     css = (
         "* {margin: 0; padding: 0;} "
-        f"body {{font-family: {'serif' if style['serif'] else 'sans-serif'}; font-size: {style['size']}px; "
-        f"line-height: 1.15; color: #{style['color']:06x}; text-align: {align}; "
+        f"body {{font-family: {font_family}; font-size: {style['size']}px; "
+        f"line-height: 1.18; color: #{style['color']:06x}; text-align: {align}; "
         f"font-weight: {'bold' if style['bold'] else 'normal'}; font-style: {'italic' if style['italic'] else 'normal'};"
-        f"{' direction: rtl;' if rtl else ''}}}"
+        f"{direction}}}"
     )
     body = html.escape(translated).replace("\n", "<br>")
     try:

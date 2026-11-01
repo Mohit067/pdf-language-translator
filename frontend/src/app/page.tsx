@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Header } from "@/components/Header";
 import { UploadCard } from "@/components/UploadCard";
 import { LanguageSelector } from "@/components/LanguageSelector";
+import { ToneSelector } from "@/components/ToneSelector";
 import { TranslationProgress } from "@/components/TranslationProgress";
 import { ComparisonWorkspace, TranslationResult } from "@/components/ComparisonWorkspace";
 import { JobsPanel } from "@/components/JobsPanel";
@@ -48,6 +49,7 @@ interface JobStatus {
   progress: number;
   message: string;
   queue_position?: number;
+  tone?: string;
   error?: string;
   error_type?: string;
   result?: TranslationResult;
@@ -279,6 +281,7 @@ export default function Home() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [sourceLang, setSourceLang] = useState<string>("English");
   const [targetLang, setTargetLang] = useState<string>("Hindi");
+  const [selectedTone, setSelectedTone] = useState<string>("Professional");
 
   // Every translation the user started; the backend runs several in parallel
   const [jobs, setJobs] = useState<TrackedJob[]>([]);
@@ -349,6 +352,7 @@ export default function Home() {
           // status "cancelled" passes straight through and ends polling for this job
           message: data.message || "",
           queuePosition: data.queue_position || 0,
+          tone: data.tone || job.tone || "Professional",
           reconnecting: false,
           result: data.result,
           error: data.status === "failed" ? friendlyJobError(data.error_type, data.error) : undefined,
@@ -397,7 +401,7 @@ export default function Home() {
       formData.append("file", selectedFile);
       formData.append("source_lang", sourceLang);
       formData.append("target_lang", targetLang);
-      formData.append("tone", "Professional");
+      formData.append("tone", selectedTone);
 
       const { status, data } = await uploadWithProgress(formData, setUploadPercent);
       if (status < 200 || status >= 300) {
@@ -413,6 +417,7 @@ export default function Home() {
         filename: selectedFile.name,
         sourceLang,
         targetLang,
+        tone: selectedTone,
         createdAt: Date.now(),
       });
       setJobs((prev) => [{ ...job, status: "queued" }, ...prev]);
@@ -616,6 +621,14 @@ export default function Home() {
                       details={directionInfo?.reason}
                     />
                   )}
+                </StepCard>
+
+                <StepCard number={3} title="Choose translation tone">
+                  <ToneSelector
+                    selectedTone={selectedTone}
+                    onSelectTone={setSelectedTone}
+                    disabled={uploading}
+                  />
                 </StepCard>
 
                 <div className="space-y-2">

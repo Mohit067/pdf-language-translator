@@ -6,7 +6,7 @@ import docx
 import pymupdf
 import pytest
 
-from backend.agent_pipeline import needs_translation, split_sentences, model_direction
+from backend.agent_pipeline import needs_translation, split_sentences, model_direction, MAX_SEGMENT_CHARS
 from backend.config import get_lang_code, resolve_lang_code
 from backend.document_processors import (
     DocumentError,
@@ -39,7 +39,7 @@ def test_sentence_split_keeps_abbreviations_and_limits_length():
     assert split_sentences("यह पहला वाक्य है। यह दूसरा है।") == ["यह पहला वाक्य है।", "यह दूसरा है।"]
     long = ", ".join(["the committee reviewed every detailed item"] * 20)
     parts = split_sentences(long)
-    assert len(parts) > 1 and all(len(p) <= 350 for p in parts)
+    assert len(parts) > 1 and all(len(p) <= MAX_SEGMENT_CHARS for p in parts)
     assert " ".join(parts).replace(" ,", ",").split() == long.split()
 
 

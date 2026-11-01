@@ -14,6 +14,7 @@ export interface TrackedJob {
   filename: string;
   sourceLang: string;
   targetLang: string;
+  tone?: string;
   createdAt: number;
   status: JobState;
   stage: number;
@@ -29,7 +30,7 @@ const JOBS_KEY = "transdoc.jobs";
 const LEGACY_ACTIVE_JOB_KEY = "transdoc.activeJob";
 const MAX_REMEMBERED = 25;
 
-type StoredJob = Pick<TrackedJob, "jobId" | "filename" | "sourceLang" | "targetLang" | "createdAt">;
+type StoredJob = Pick<TrackedJob, "jobId" | "filename" | "sourceLang" | "targetLang" | "createdAt" | "tone">;
 
 export function newTrackedJob(job: StoredJob): TrackedJob {
   return { ...job, status: "unknown", stage: 1, progress: 0, message: "", queuePosition: 0, reconnecting: false };

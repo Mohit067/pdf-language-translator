@@ -15,8 +15,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # uv resolves and installs wheels many times faster than pip
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install "uv>=0.5,<1"
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # 1. PyTorch CPU in its own layer: the ~200 MB download is reused even when requirements.txt changes
 RUN --mount=type=cache,target=/root/.cache/uv \

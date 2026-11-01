@@ -41,6 +41,12 @@ INDICTRANS2_EN_INDIC_REVISION = os.getenv("INDICTRANS2_EN_INDIC_REVISION") or (
 INDICTRANS2_INDIC_EN_REVISION = os.getenv("INDICTRANS2_INDIC_EN_REVISION") or None
 INDICTRANS2_INDIC_INDIC_REVISION = os.getenv("INDICTRANS2_INDIC_INDIC_REVISION") or None
 
+# Translation engine configuration
+TRANSLATION_ENGINE = os.getenv("TRANSLATION_ENGINE", "indictrans2").lower()  # 'auto', 'groq', 'indictrans2'
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+MAX_SEGMENT_CHARS = max(200, _env_int("MAX_SEGMENT_CHARS", 750))
+
 # Local inference tuning
 TRANSLATION_BATCH_SIZE = max(1, _env_int("TRANSLATION_BATCH_SIZE", 8))   # sentences per forward pass
 TRANSLATION_NUM_BEAMS = max(1, _env_int("TRANSLATION_NUM_BEAMS", 4))     # 1 = greedy (fastest)

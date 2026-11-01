@@ -12,12 +12,16 @@ import logging
 import os
 import re
 import sys
+import json
 import threading
+import urllib.request
 from pathlib import Path
 from collections import OrderedDict, deque
 from typing import Callable, Dict, List, Optional, Tuple
 
 from backend.config import (
+    GROQ_API_KEY,
+    GROQ_MODEL,
     INDICTRANS2_EN_INDIC_MODEL,
     INDICTRANS2_EN_INDIC_REVISION,
     INDICTRANS2_INDIC_EN_MODEL,
@@ -25,11 +29,14 @@ from backend.config import (
     INDICTRANS2_INDIC_INDIC_MODEL,
     INDICTRANS2_INDIC_INDIC_REVISION,
     MAX_LOADED_MODELS,
+    MAX_SEGMENT_CHARS,
     QUANTIZE_CPU_MODELS,
     TORCH_NUM_THREADS,
     TRANSLATION_BATCH_SIZE,
+    TRANSLATION_ENGINE,
     TRANSLATION_NUM_BEAMS,
     get_lang_code,
+    get_lang_name,
 )
 
 logger = logging.getLogger("indictrans2_translator")
@@ -37,7 +44,7 @@ logging.basicConfig(level=logging.INFO)
 
 ENGLISH = "eng_Latn"
 MODEL_MAX_TOKENS = 256          # IndicTrans2 max source/target positions
-MAX_SEGMENT_CHARS = 350         # sentences longer than this are split at clause/word boundaries
+# MAX_SEGMENT_CHARS is imported from backend.config (default: 750)
 CACHE_MAX_ENTRIES = 50_000
 
 ProgressCallback = Callable[[int, int], None]
@@ -54,10 +61,11 @@ class TranslationError(RuntimeError):
 # Text with no letters (numbers, dates, currency, symbols) is kept verbatim
 _HAS_LETTER = re.compile(r"[^\W\d_]")
 _URL_OR_EMAIL_ONLY = re.compile(r"^(?:(?:https?|ftp)://\S+|www\.\S+|[\w.+-]+@[\w-]+\.[\w.-]+)$", re.IGNORECASE)
-_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?।॥۔؟])\s+")
+_SENTENCE_BOUNDARY = re.compile(r"""(?<=[.!?।॥۔؟])\s+|(?<=[.!?।॥۔؟]['"”’)\]])\s+|(?<=[.!?।॥۔؟]['"”’)\]]['"”’)\]])\s+""")
 _ABBREVIATIONS = {
     "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "e.g", "i.e", "no", "inc",
     "ltd", "co", "corp", "fig", "approx", "dept", "est", "govt", "pvt", "rs", "u.s", "a.m", "p.m",
+    "col", "gen", "capt", "rev", "vol", "vols", "pp", "chap", "sec", "ed", "al", "hon", "gov",
 }
 
 
@@ -128,10 +136,13 @@ def split_sentences(text: str) -> List[str]:
 
 
 def _split_long(sentence: str, limit: int = MAX_SEGMENT_CHARS) -> List[str]:
-    """Split an over-long sentence at clause punctuation, then at word boundaries."""
+    """Split an over-long sentence at higher-level clauses, conjunctions, then words.
+    Does not aggressively shred at commas to preserve natural syntactic meaning."""
     if len(sentence) <= limit:
         return [sentence]
-    for sep in ("; ", ": ", ", "):
+
+    # Level 1: Major punctuation clauses (semicolon, colon, em-dash)
+    for sep in ("; ", " — ", " – ", ": "):
         parts = sentence.split(sep)
         if len(parts) > 1:
             chunks, current = [], ""
@@ -145,7 +156,42 @@ def _split_long(sentence: str, limit: int = MAX_SEGMENT_CHARS) -> List[str]:
             chunks.append(current)
             if all(len(c) <= limit for c in chunks):
                 return chunks
-            return [sub for c in chunks for sub in _split_long(c, limit)]
+            return [sub for c in chunks for sub in _split_long(sub, limit)]
+
+    # Level 2: Coordinating conjunctions
+    for sep in (", and ", ", but ", ", however, ", ", whereas ", ", while "):
+        parts = sentence.split(sep)
+        if len(parts) > 1:
+            chunks, current = [], ""
+            for i, part in enumerate(parts):
+                piece = part + (sep.rstrip() if i < len(parts) - 1 else "")
+                if current and len(current) + len(piece) + 1 > limit:
+                    chunks.append(current)
+                    current = piece
+                else:
+                    current = f"{current} {piece}".strip()
+            chunks.append(current)
+            if all(len(c) <= limit for c in chunks):
+                return chunks
+            return [sub for c in chunks for sub in _split_long(sub, limit)]
+
+    # Level 3: Commas (only as fallback for very long complex sentences)
+    parts = sentence.split(", ")
+    if len(parts) > 1:
+        chunks, current = [], ""
+        for i, part in enumerate(parts):
+            piece = part + ("," if i < len(parts) - 1 else "")
+            if current and len(current) + len(piece) + 1 > limit:
+                chunks.append(current)
+                current = piece
+            else:
+                current = f"{current} {piece}".strip()
+        chunks.append(current)
+        if all(len(c) <= limit for c in chunks):
+            return chunks
+        return [sub for c in chunks for sub in _split_long(sub, limit)]
+
+    # Level 4: Word boundary fallback
     words, chunks, current = sentence.split(), [], ""
     for word in words:
         if current and len(current) + len(word) + 1 > limit:
@@ -175,6 +221,15 @@ MODEL_REVISIONS = {
     "en-indic": INDICTRANS2_EN_INDIC_REVISION,
     "indic-en": INDICTRANS2_INDIC_EN_REVISION,
     "indic-indic": INDICTRANS2_INDIC_INDIC_REVISION,
+}
+
+
+TONE_DESCRIPTIONS = {
+    "Professional": "Formal, objective, and dignified standard vocabulary suitable for business, official documents, and legal records.",
+    "Literary": "Rich, poetic, evocative phrasing with natural storytelling flow suitable for books, novels, history, biography, and philosophy.",
+    "Conversational": "Natural, modern, everyday spoken language suitable for dialogue, casual articles, messages, and emails.",
+    "Academic": "Intellectually rigorous terminology and precise domain vocabulary suitable for research papers, manuals, and textbooks.",
+    "Simple": "Very simple everyday words, short clean sentences, and minimal complex jargon suitable for general audiences and easy learning.",
 }
 
 
@@ -503,7 +558,7 @@ class IndicTrans2Agent:
                     on_batch(pivoted)
                 return {**results, **pivoted}
 
-        pending.sort(key=len)  # similar lengths per batch -> less padding, faster generation
+        # Keep pending sentences in document sequence to preserve narrative continuity
         done = 0
         for i in range(0, len(pending), TRANSLATION_BATCH_SIZE):
             batch = pending[i:i + TRANSLATION_BATCH_SIZE]
@@ -513,7 +568,9 @@ class IndicTrans2Agent:
                 if not out:
                     raise TranslationError(f"Local model returned an empty translation for: {src[:80]!r}")
                 batch_results[src] = out
-            self._cache_put(src_code, tgt_code, batch_results)
+            for s, tr in batch_results.items():
+                self._cache_put(src_code, tgt_code, {s: tr})
+                self._cache[(src_code, tgt_code, tone, s)] = tr
             results.update(batch_results)
             if on_batch:
                 on_batch(batch_results)
@@ -531,6 +588,100 @@ class IndicTrans2Agent:
         return {s: from_en[e] for s, e in zip(sentences, english)}
 
     # ------------------------------------------------------------------ public API
+    def has_llm_engine(self) -> bool:
+        return bool(GROQ_API_KEY and TRANSLATION_ENGINE in ("auto", "groq"))
+
+    def _groq_translate_batch(self, texts: List[str], source_lang: str, target_lang: str, tone: str = "Professional") -> List[str]:
+        src_name = get_lang_name(get_lang_code(source_lang)) if source_lang else "English"
+        tgt_name = get_lang_name(get_lang_code(target_lang)) if target_lang else "Hindi"
+        tone_instruction = TONE_DESCRIPTIONS.get(tone, TONE_DESCRIPTIONS["Professional"])
+        system_prompt = (
+            f"You are an expert literary and academic translator translating documents from {src_name} to {tgt_name}.\n"
+            f"Requested Style / Tone: {tone} ({tone_instruction})\n"
+            "Instructions:\n"
+            f"1. Translate each text adopting the requested {tone} tone while maintaining natural flow, narrative continuity, and precise semantic meaning.\n"
+            "2. Do NOT translate word-to-word literally; ensure the translated sentences convey the author's true intent, "
+            f"idiomatic richness, and natural grammatical structure in {tgt_name}.\n"
+            "3. Preserve all numbers, dates, proper nouns (e.g. historical names), citations, and formatting.\n"
+            "4. Return ONLY a valid JSON object with key 'translations', containing a list of translated strings matching the input list length and order exactly."
+        )
+        user_payload = json.dumps({"source": texts}, ensure_ascii=False)
+        req = urllib.request.Request(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            data=json.dumps({
+                "model": GROQ_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Translate the 'source' list to {tgt_name}. Output valid JSON only:\n{user_payload}"}
+                ],
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"}
+            }).encode("utf-8")
+        )
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        content = data["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        translations = parsed.get("translations", [])
+        if len(translations) != len(texts):
+            raise TranslationError(f"LLM returned {len(translations)} items for {len(texts)} inputs")
+        return [str(t).strip() for t in translations]
+
+    def _translate_texts_llm(
+        self,
+        texts: List[str],
+        source_lang: str,
+        target_lang: str,
+        progress: Optional[ProgressCallback] = None,
+        known: Optional[Dict[str, str]] = None,
+        on_batch: Optional[Callable[[Dict[str, str]], None]] = None,
+        tone: str = "Professional",
+    ) -> List[str]:
+        src_code, tgt_code = get_lang_code(source_lang), get_lang_code(target_lang)
+        results: Dict[str, str] = {}
+        pending: List[str] = []
+
+        # Find unique translatable texts
+        for t in dict.fromkeys(texts):
+            stripped = (t or "").strip()
+            if not needs_translation(stripped):
+                continue
+            key = (src_code, tgt_code, tone, stripped)
+            if known and stripped in known:
+                results[stripped] = known[stripped]
+            elif self._cache_get(key) is not None:
+                results[stripped] = self._cache_get(key)
+            else:
+                pending.append(stripped)
+
+        total = len(dict.fromkeys(t.strip() for t in texts if needs_translation(t or "")))
+        done = len(results)
+        if progress:
+            progress(done, total)
+
+        batch_size = 6
+        for i in range(0, len(pending), batch_size):
+            batch = pending[i:i + batch_size]
+            translated_batch = self._groq_translate_batch(batch, source_lang, target_lang, tone=tone)
+            batch_results = {s: tr for s, tr in zip(batch, translated_batch)}
+            self._cache_put(src_code, tgt_code, batch_results)
+            results.update(batch_results)
+            if on_batch:
+                on_batch(batch_results)
+            done += len(batch)
+            if progress:
+                progress(done, total)
+
+        outputs: List[str] = []
+        for t in texts:
+            stripped = (t or "").strip()
+            if not needs_translation(stripped):
+                outputs.append(t)
+            else:
+                outputs.append(results.get(stripped, t))
+        return outputs
+
     def translate_texts(
         self,
         texts: List[str],
@@ -539,7 +690,13 @@ class IndicTrans2Agent:
         progress: Optional[ProgressCallback] = None,
         known: Optional[Dict[str, str]] = None,
         on_batch: Optional[Callable[[Dict[str, str]], None]] = None,
+        tone: str = "Professional",
     ) -> List[str]:
+        if self.has_llm_engine():
+            try:
+                return self._translate_texts_llm(texts, source_lang, target_lang, progress, known, on_batch, tone=tone)
+            except Exception as e:
+                logger.warning(f"Contextual LLM translation failed ({e}); falling back to local IndicTrans2")
         """Translates a list of texts, returning one translation per input (same order, same length).
         Line breaks, blank lines and indentation are preserved; text without letters is kept verbatim.
         `known`/`on_batch` support checkpointing (see _translate_sentences)."""
@@ -579,8 +736,8 @@ class IndicTrans2Agent:
         return outputs
 
     def translate_chunk(self, text: str, source_lang: str, target_lang: str, tone: str = "Professional") -> str:
-        """Translates a single (possibly multi-line) block of text."""
-        return self.translate_texts([text], source_lang, target_lang)[0]
+        """Translates a single (possibly multi-line) block of text with the specified tone."""
+        return self.translate_texts([text], source_lang, target_lang, tone=tone)[0]
 
 
 # Singleton instance (models load lazily on first use)

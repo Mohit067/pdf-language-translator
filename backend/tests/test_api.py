@@ -102,3 +102,12 @@ def test_original_is_downloadable_with_unicode_filename_even_when_job_failed(cli
     assert d.status_code == 200
     assert "filename*=utf-8''" in d.headers["content-disposition"]
     assert client.get(f"/api/download/{job_id}").status_code == 409  # translated not ready
+
+
+def test_translate_accepts_tone(client):
+    r = submit(client, "test.txt", b"Hello world", "English", "Hindi", tone="Literary")
+    assert r.status_code == 202
+    job_id = r.json()["job_id"]
+    status = client.get(f"/api/jobs/{job_id}").json()
+    assert status.get("tone") == "Literary"
+    client.delete(f"/api/jobs/{job_id}")

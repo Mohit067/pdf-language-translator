@@ -44,8 +44,7 @@ COPY --from=node:20-bookworm-slim /usr/local/bin/node /usr/local/bin/node
 
 # 2. Python dependencies with uv + BuildKit caches; PyTorch in its own reusable layer
 ENV UV_LINK_MODE=copy UV_SYSTEM_PYTHON=1
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install "uv>=0.5,<1"
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install torch --index-url https://download.pytorch.org/whl/cpu
 COPY backend/requirements.txt ./backend/

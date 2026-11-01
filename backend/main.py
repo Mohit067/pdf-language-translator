@@ -193,14 +193,19 @@ def _get_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 def _update_job(job_id: str, **fields) -> None:
     with _JOBS_LOCK:
-        job = JOB_CACHE[job_id]
+        job = JOB_CACHE.get(job_id)
+        if job is None:
+            return
         job.update(fields, updated_at=time.time())
 
 
 def _persist_job(job_id: str) -> None:
     """Saves job metadata so the job survives backend restarts (resumed or still downloadable)."""
     with _JOBS_LOCK:
-        snapshot = json.dumps(JOB_CACHE[job_id], ensure_ascii=False)
+        job = JOB_CACHE.get(job_id)
+        if job is None:
+            return
+        snapshot = json.dumps(job, ensure_ascii=False)
     try:
         tmp = _meta_path(job_id).with_suffix(".tmp")
         tmp.write_text(snapshot, encoding="utf-8")
@@ -242,8 +247,9 @@ def _queue_position(job_id: str) -> int:
 
 
 def _run_job(job_id: str) -> None:
-    job = JOB_CACHE[job_id]
-    if job_id in _CANCELLED or job["status"] == "cancelled":
+    with _JOBS_LOCK:
+        job = JOB_CACHE.get(job_id)
+    if job is None or job_id in _CANCELLED or job.get("status") == "cancelled":
         return
     _update_job(job_id, status="processing", stage=1, progress=1, message="Starting")
 
@@ -303,6 +309,7 @@ def _public_result(job: Dict[str, Any]) -> Dict[str, Any]:
         "chunk_count": result["chunk_count"],
         "source_lang": result["source_lang"],
         "target_lang": result["target_lang"],
+        "tone": job.get("tone", "Professional"),
         "src_code": get_lang_code(result["source_lang"]),
         "tgt_code": get_lang_code(result["target_lang"]),
         "engine": "AI4Bharat IndicTrans2 (local)",
@@ -331,6 +338,7 @@ def _job_status(job: Dict[str, Any]) -> Dict[str, Any]:
         "filename": job["user_filename"],
         "source_lang": job["source_lang"],
         "target_lang": job["target_lang"],
+        "tone": job.get("tone", "Professional"),
     }
     if job["status"] == "queued":
         status["queue_position"] = _queue_position(job["job_id"])

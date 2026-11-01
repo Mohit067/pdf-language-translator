@@ -29,6 +29,7 @@ def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(processors, "OUTPUTS_DIR", outputs)
     monkeypatch.setattr(main, "PRELOAD_MODELS", [])  # tests load the model only where they need it
     monkeypatch.setattr(main, "_preload_models", lambda: None)  # no startup network checks in tests
+    monkeypatch.setattr(agent, "has_llm_engine", lambda: False)  # unit tests test local engine
     main.JOB_CACHE.clear()
     yield uploads, outputs
 
@@ -61,11 +62,11 @@ def require_model():
     return _require
 
 
-def submit(client, filename: str, data: bytes, source="English", target="Hindi"):
+def submit(client, filename: str, data: bytes, source="English", target="Hindi", tone="Professional"):
     return client.post(
         "/api/translate",
         files={"file": (filename, data)},
-        data={"source_lang": source, "target_lang": target, "tone": "Professional"},
+        data={"source_lang": source, "target_lang": target, "tone": tone},
     )
 
 
